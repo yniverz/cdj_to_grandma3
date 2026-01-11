@@ -173,6 +173,7 @@ class TrackState:
     device_id: str = ""
     is_on_air: bool = False
     track_time_ms: int = 0
+    track_length_s: float = 0.0
     rekordbox_id: str = ""
     title: str = ""
     bpm: float = 0.0
@@ -199,7 +200,7 @@ class SharedState:
         # store monotonic timestamps of recent updates
         self._osc_times = deque()  # type: deque[float]
 
-    def update_from_osc(self, device_id: str, is_on_air: bool, track_time_ms: int, rekordbox_id: str, title: str, bpm: float = 0.0):
+    def update_from_osc(self, device_id: str, is_on_air: bool, track_time_ms: int, track_length_s: float, rekordbox_id: str, title: str, bpm: float = 0.0):
         nowm = time.monotonic()
         bpm_changed = False
         player_list_changed = False
@@ -215,6 +216,7 @@ class SharedState:
             player.device_id = str(device_id)
             player.is_on_air = bool(is_on_air)
             player.track_time_ms = int(track_time_ms)
+            player.track_length_s = float(track_length_s)
             player.rekordbox_id = str(rekordbox_id or "")
             player.title = str(title or "")
             player.bpm = float(bpm)
@@ -326,6 +328,18 @@ class SharedState:
                 self.track = TrackState(**asdict(active_player))
                 return True
             return False
+    
+    def remove_player(self, device_id: str):
+        """Remove a player from tracking."""
+        with self._lock:
+            if device_id in self.players:
+                del self.players[device_id]
+            if device_id in self.last_on_air_time:
+                del self.last_on_air_time[device_id]
+            # If this was the active player, clear active selection
+            if self.active_player_id == device_id:
+                self.active_player_id = None
+                self.signal_ok = False
 
 
 # ----------------------------
@@ -384,9 +398,9 @@ class OscReceiver:
     def _handler(self, address: str, *args):
         """
         Accept shapes:
-          /blt/player device_id is_on_air track_time_ms rekordbox_id title bpm
-        Expected: device_id (str), is_on_air (bool/int), track_time_ms (int), 
-                  rekordbox_id (int/str), title (str), bpm (float)
+          /blt/player device_id is_on_air track_time_ms track_length_s rekordbox_id title bpm
+        Expected: device_id (str), is_on_air (bool/int), track_time_ms (int),
+                  track_length_s (float), rekordbox_id (int/str), title (str), bpm (float)
         """
         # Ignore OSC data when in simulation mode
         if self.state.is_simulation_mode():
@@ -395,10 +409,11 @@ class OscReceiver:
         if not args:
             return
 
-        # Expected format: device_id, is_on_air, track_time_ms, rekordbox_id, title, bpm
+        # Expected format: device_id, is_on_air, track_time_ms, track_length_s, rekordbox_id, title, bpm
         device_id = ""
         is_on_air = False
         track_time_ms = None
+        track_length_s = 0.0
         rekordbox_id = ""
         title = ""
         bpm = 0.0
@@ -419,18 +434,20 @@ class OscReceiver:
                 is_on_air = False
         if len(args) >= 3 and isinstance(args[2], (int, float)):
             track_time_ms = int(args[2])
-        if len(args) >= 4:
-            rekordbox_id = str(args[3])
+        if len(args) >= 4 and isinstance(args[3], (int, float)):
+            track_length_s = float(args[3])
         if len(args) >= 5:
-            title = str(args[4])
-        if len(args) >= 6 and isinstance(args[5], (int, float)):
-            bpm = float(args[5])
+            rekordbox_id = str(args[4])
+        if len(args) >= 6:
+            title = str(args[5])
+        if len(args) >= 7 and isinstance(args[6], (int, float)):
+            bpm = float(args[6])
 
         if track_time_ms is None or not device_id:
             return
 
         bpm_changed, player_list_changed, active_changed = self.state.update_from_osc(
-            device_id, is_on_air, track_time_ms, rekordbox_id, title, bpm
+            device_id, is_on_air, track_time_ms, track_length_s, rekordbox_id, title, bpm
         )
         self.ui_queue.put(("osc_update", (bpm_changed, player_list_changed, active_changed)))
 
@@ -1011,18 +1028,19 @@ This application listens for OSC messages on:
   • Path: /blt/player
 
 Expected OSC Message Format:
-  /blt/player <device_id> <is_on_air> <track_time_ms> <rekordbox_id> <title> <bpm>
+  /blt/player <device_id> <is_on_air> <track_time_ms> <track_length_s> <rekordbox_id> <title> <bpm>
 
   Parameters:
     • device_id (str)        - Player/device identifier (e.g., "CDJ1", "CDJ2")
     • is_on_air (bool/int)   - Whether this player is currently on air (1/0 or true/false)
     • track_time_ms (int)    - Current position in track (milliseconds)
+    • track_length_s (float) - Total length of track (seconds)
     • rekordbox_id (str)     - Rekordbox track ID
     • title (str)            - Track title
     • bpm (float)            - Current track BPM
 
   Example:
-    /blt/player "CDJ1" 1 123456 987654 "My Track" 128.0
+    /blt/player "CDJ1" 1 123456 240.5 987654 "My Track" 128.0
 
 Multi-Player Behavior:
   • The application tracks all players that send data
@@ -1427,6 +1445,9 @@ BPM Not Updating:
         if not self.playback_selected_entry:
             return
         
+        # Store current active player to restore later
+        self.playback_previous_active = self.state.get_active_player_id()
+        
         # Enter simulation mode
         self.state.set_simulation_mode(True)
         self._update_mode_indicators()
@@ -1485,9 +1506,16 @@ BPM Not Updating:
         if self.playback_audio_thread and self.playback_audio_thread.is_alive():
             self.playback_audio_thread.join(timeout=0.5)
         
+        # Remove simulation player and restore previous selection
+        self.state.remove_player("SIM1")
+        if hasattr(self, 'playback_previous_active') and self.playback_previous_active:
+            if self.playback_previous_active != "SIM1":
+                self.state.set_active_player(self.playback_previous_active)
+        
         # Exit simulation mode
         self.state.set_simulation_mode(False)
         self._update_mode_indicators()
+        self._update_player_buttons()  # Refresh UI to remove SIM1 button
         
         # Reset controls
         self.btn_playback_play.config(state="normal")
@@ -1625,10 +1653,15 @@ BPM Not Updating:
                 "SIM1",  # simulated device ID
                 False,  # is_on_air = False for simulation
                 track_time_ms,
+                self.playback_duration,  # track_length_s
                 self.playback_selected_entry.rekordbox_id,
                 self.playback_selected_entry.title,
                 self.playback_bpm
             )
+            
+            # Force SIM1 as active player (override any other selection during simulation)
+            if not active_changed:
+                self.state.set_active_player("SIM1")
             
             if bpm_changed and self.osc_sender:
                 self.after(0, lambda: self.osc_sender.send_bpm_update(self.playback_bpm))
@@ -1755,6 +1788,13 @@ BPM Not Updating:
         """Update the player selector buttons based on current players."""
         players = self.state.get_players()
         
+        # Remove buttons for players that no longer exist
+        for device_id in list(self.player_buttons.keys()):
+            if device_id not in players:
+                btn, lbl, frame = self.player_buttons[device_id]
+                frame.destroy()
+                del self.player_buttons[device_id]
+        
         # Add buttons for new players
         for device_id, player in players.items():
             if device_id not in self.player_buttons:
@@ -1783,7 +1823,15 @@ BPM Not Updating:
                 _, lbl, _ = self.player_buttons[device_id]
                 title = player.title or "(no title)"
                 on_air_marker = " [ON AIR]" if player.is_on_air else ""
-                lbl.configure(text=f"{title}{on_air_marker}")
+                
+                # Calculate percentage
+                if player.track_length_s > 0:
+                    percentage = (player.track_time_ms / (player.track_length_s * 1000.0)) * 100.0
+                    percentage_str = f" ({percentage:.2f}%)"
+                else:
+                    percentage_str = ""
+                
+                lbl.configure(text=f"{title}{on_air_marker}{percentage_str}")
         
         # Update button states
         self._update_player_selection()
