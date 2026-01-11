@@ -388,9 +388,6 @@ class OscReceiver:
         Expected: device_id (str), is_on_air (bool/int), track_time_ms (int), 
                   rekordbox_id (int/str), title (str), bpm (float)
         """
-
-        print("OSC received:", address, args)
-
         # Ignore OSC data when in simulation mode
         if self.state.is_simulation_mode():
             return
@@ -441,16 +438,8 @@ class OscReceiver:
         if Dispatcher is None or ThreadingOSCUDPServer is None:
             raise RuntimeError("python-osc is not installed. Run: pip install python-osc")
 
-        print("Starting OSC server on {}:{}".format(self.cfg.osc_listen_ip, self.cfg.osc_listen_port))
-        print("Listening for OSC messages on path: {}".format(self.cfg.osc_path))
         disp = Dispatcher()
-        
-        # Map the handler
         disp.map(self.cfg.osc_path, self._handler)
-        print(f"Mapped handler to path: {self.cfg.osc_path}")
-        
-        # Debug: print all registered handlers
-        print(f"Dispatcher has handlers: {disp._map}")
 
         self.server = ThreadingOSCUDPServer((self.cfg.osc_listen_ip, int(self.cfg.osc_listen_port)), disp)
 
@@ -1168,7 +1157,7 @@ BPM Not Updating:
         # OSC input is hardcoded, no UI to read from
         self.cfg.osc_listen_ip = "0.0.0.0"
         self.cfg.osc_listen_port = 9000
-        self.cfg.osc_path = "/blt/track"
+        self.cfg.osc_path = "/blt/player"
 
         self.cfg.artnet_use_broadcast = bool(self.var_use_bcast.get())
         self.cfg.artnet_target_ip = self.var_target_ip.get().strip() or ("2.255.255.255" if self.cfg.artnet_use_broadcast else "127.0.0.1")
