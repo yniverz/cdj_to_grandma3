@@ -205,6 +205,7 @@ class SharedState:
         bpm_changed = False
         player_list_changed = False
         active_changed = False
+        match_changed = False
         
         with self._lock:
             # Update or create player state
@@ -215,6 +216,8 @@ class SharedState:
             
             player = self.players[device_id]
             old_bpm = player.bpm
+            old_rekordbox_id = player.rekordbox_id
+            old_title = player.title
             player.device_id = str(device_id)
             player.is_on_air = bool(is_on_air)
             player.track_time_ms = int(track_time_ms)
@@ -258,6 +261,12 @@ class SharedState:
             # Update main track state with active player's data
             if self.active_player_id and self.active_player_id in self.players:
                 active_player = self.players[self.active_player_id]
+                
+                # Check if track changed for the active player (need to update offset match)
+                if (self.active_player_id == device_id and 
+                    (old_rekordbox_id != active_player.rekordbox_id or old_title != active_player.title)):
+                    match_changed = True
+                
                 self.track = TrackState(**asdict(active_player))
                 self.signal_ok = True
                 
@@ -274,7 +283,7 @@ class SharedState:
             while self._osc_times and self._osc_times[0] < cutoff:
                 self._osc_times.popleft()
         
-        return bpm_changed, player_list_changed, active_changed
+        return bpm_changed, player_list_changed, active_changed, match_changed
 
     def snapshot(self) -> Tuple[TrackState, int, str, bool]:
         with self._lock:
@@ -453,10 +462,10 @@ class OscReceiver:
         if track_time_ms is None or not device_id:
             return
 
-        bpm_changed, player_list_changed, active_changed = self.state.update_from_osc(
+        bpm_changed, player_list_changed, active_changed, match_changed = self.state.update_from_osc(
             device_id, is_on_air, track_time_ms, track_length_s, rekordbox_id, title, bpm
         )
-        self.ui_queue.put(("osc_update", (bpm_changed, player_list_changed, active_changed)))
+        self.ui_queue.put(("osc_update", (bpm_changed, player_list_changed, active_changed, match_changed)))
 
     def start(self):
         if Dispatcher is None or ThreadingOSCUDPServer is None:
@@ -522,23 +531,38 @@ class ArtnetSender:
             send_rate = max(1, int(self.cfg.send_rate_hz))
             period = 1.0 / float(send_rate)
             next_send = time.monotonic()
+            current_offset_ms = 0
+            has_valid_match = False
 
             while not self._stop.is_set():
                 track, matched_offset_ms, matched_label, signal_ok = self.state.snapshot()
 
-                # Update matching
-                offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
-                if offset_ms != matched_offset_ms or label != matched_label:
-                    self.state.set_match(offset_ms, label)
-                    self.ui_queue.put(("match_update", None))
+                # Check if we need to update matching (only when explicitly signaled)
+                try:
+                    while True:
+                        kind, payload = self.ui_queue.get_nowait()
+                        if kind == "match_update":
+                            offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
+                            if offset_ms != matched_offset_ms or label != matched_label:
+                                self.state.set_match(offset_ms, label)
+                                current_offset_ms = offset_ms
+                                has_valid_match = (label != "(none)")
+                                if has_valid_match:
+                                    print(f"[DEBUG] Art-Net: Offset match found - {label}")
+                                else:
+                                    print(f"[DEBUG] Art-Net: No offset match - timecode sending disabled")
+                        self.ui_queue.task_done()
+                except:
+                    pass
 
                 nowm = time.monotonic()
                 age = nowm - float(track.last_recv_monotonic or 0.0)
 
-                if (not signal_ok) or (track.last_recv_monotonic <= 0):
-                    # No signal - stop sending if timecode was previously being sent
+                if (not signal_ok) or (track.last_recv_monotonic <= 0) or not has_valid_match:
+                    # No signal or no valid match - stop sending if timecode was previously being sent
                     if self.last_sent_timecode is not None:
-                        print("[DEBUG] Art-Net: Stopping timecode send (no signal)")
+                        reason = "no signal" if not signal_ok else "no offset match"
+                        print(f"[DEBUG] Art-Net: Stopping timecode send ({reason})")
                         self.last_sent_timecode = None
                     
                     # Don't send anything when there's no signal
@@ -556,7 +580,7 @@ class ArtnetSender:
                 else:
                     effective_ms = track.last_recv_time_ms
 
-                effective_ms += int(offset_ms) + int(self.cfg.global_shift_ms)
+                effective_ms += int(current_offset_ms) + int(self.cfg.global_shift_ms)
 
                 h, m, s, f = ms_to_timecode_fields(effective_ms, fps=fps)
                 
@@ -1663,7 +1687,7 @@ BPM Not Updating:
             track_time_ms = int(pos * 1000)
             
             # Send simulated OSC data (use a simulated device_id for playback)
-            bpm_changed, player_list_changed, active_changed = self.state.update_from_osc(
+            bpm_changed, player_list_changed, active_changed, match_changed = self.state.update_from_osc(
                 "SIM1",  # simulated device ID
                 False,  # is_on_air = False for simulation
                 track_time_ms,
@@ -1781,8 +1805,8 @@ BPM Not Updating:
                 if kind == "error":
                     self.lbl_err.configure(text=str(payload))
                 elif kind == "osc_update":
-                    # payload is (bpm_changed, player_list_changed, active_changed)
-                    bpm_changed, player_list_changed, active_changed = payload
+                    # payload is (bpm_changed, player_list_changed, active_changed, match_changed)
+                    bpm_changed, player_list_changed, active_changed, match_changed = payload
                     if bpm_changed and self.osc_sender:
                         track, _, _, _ = self.state.snapshot()
                         self.osc_sender.send_bpm_update(track.bpm)
@@ -1793,6 +1817,9 @@ BPM Not Updating:
                     self._update_player_button_labels()
                     if active_changed:
                         self._update_player_selection()
+                    # Update offset matching if track changed
+                    if match_changed:
+                        self.ui_queue.put(("match_update", None))
                     self._refresh_status()
                 elif kind == "osc_sent":
                     # payload is (bpm1, bpm2)
