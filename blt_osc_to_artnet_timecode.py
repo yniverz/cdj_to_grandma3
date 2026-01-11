@@ -678,6 +678,10 @@ class App(tk.Tk):
         self.playback_audio_lock = threading.Lock()  # Prevent concurrent audio starts
         self.playback_slider_updating = False  # Prevent seek during slider updates
         self.playback_was_playing_before_seek = False  # Track if playing before slider grab
+        
+        # Throttle player button updates to avoid UI interference
+        self._last_player_button_update = 0
+        self._player_button_update_interval = 0.2  # Update at most every 200ms (5 times/sec)
 
         self._build_ui()
         self._refresh_status()
@@ -1768,8 +1772,8 @@ BPM Not Updating:
                     if bpm_changed and self.osc_sender:
                         track, _, _, _ = self.state.snapshot()
                         self.osc_sender.send_bpm_update(track.bpm)
-                    # Always update player buttons to refresh percentage values
-                    self._update_player_buttons()
+                    # Update player buttons with throttling, but force update if player list changed
+                    self._update_player_buttons(force=player_list_changed)
                     if active_changed:
                         self._update_player_selection()
                     self._refresh_status()
@@ -1784,8 +1788,18 @@ BPM Not Updating:
             pass
         self.after(50, self._poll_ui_queue)
 
-    def _update_player_buttons(self):
-        """Update the player selector buttons based on current players."""
+    def _update_player_buttons(self, force=False):
+        """Update the player selector buttons based on current players.
+        
+        Args:
+            force: If True, update immediately regardless of throttle interval
+        """
+        # Throttle updates to avoid UI interference (unless forced)
+        now = time.time()
+        if not force and (now - self._last_player_button_update) < self._player_button_update_interval:
+            return
+        
+        self._last_player_button_update = now
         players = self.state.get_players()
         
         # Remove buttons for players that no longer exist
