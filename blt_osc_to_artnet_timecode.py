@@ -1851,9 +1851,7 @@ BPM Not Updating:
                         self._update_player_selection()
                     # Update offset matching if track changed
                     if match_changed or active_changed:
-                        track, _, _, _ = self.state.snapshot()
-                        offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
-                        self.state.set_match(offset_ms, label)
+                        offset_ms, label = self._calculate_match()
                         if label != "(none)":
                             print(f"[DEBUG] Offset match found: {label}")
                         else:
@@ -1942,17 +1940,7 @@ BPM Not Updating:
     def _trigger_offset_rematch(self):
         """Helper to trigger offset matching for current active player."""
         if self.state.trigger_offset_match():
-            # Check if we have a forced offset (simulation mode)
-            forced_offset_ms, forced_offset_label = self.state.get_forced_offset()
-            if forced_offset_ms is not None:
-                # Use forced offset instead of matching
-                print(f"[DEBUG] Using forced offset: {forced_offset_label} ({forced_offset_ms}ms)")
-                self.state.set_match(forced_offset_ms, forced_offset_label)
-            else:
-                # Normal matching logic
-                track, _, _, _ = self.state.snapshot()
-                offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
-                self.state.set_match(offset_ms, label)
+            self._calculate_match()
             self._refresh_status()
     
     def _select_player(self, device_id: str):
@@ -1964,14 +1952,28 @@ BPM Not Updating:
             self._refresh_status()
             # Trigger offset matching for the newly selected player
             if self.state.trigger_offset_match():
-                track, _, _, _ = self.state.snapshot()
-                offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
-                self.state.set_match(offset_ms, label)
+                self._calculate_match()
+                self._refresh_status()
             # Send BPM update if needed
             if self.osc_sender:
                 track, _, _, _ = self.state.snapshot()
                 if track.bpm > 0:
                     self.osc_sender.send_bpm_update(track.bpm)
+
+    def _calculate_match(self) -> Tuple[int, str]:
+        forced_offset_ms, forced_offset_label = self.state.get_forced_offset()
+        if forced_offset_ms is not None:
+            # Use forced offset instead of matching
+            print(f"[DEBUG] Using forced offset: {forced_offset_label} ({forced_offset_ms}ms)")
+            self.state.set_match(forced_offset_ms, forced_offset_label)
+            return forced_offset_ms, forced_offset_label
+        
+        # Normal matching logic
+        track, _, _, _ = self.state.snapshot()
+        offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
+        self.state.set_match(offset_ms, label)
+        return offset_ms, label
+
 
     def _refresh_status(self):
         track, matched_offset_ms, matched_label, signal_ok = self.state.snapshot()
