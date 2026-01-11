@@ -497,6 +497,7 @@ class ArtnetSender:
         self.thread = None
         self._stop = threading.Event()
         self.sock = None
+        self.last_sent_timecode = None  # Track last sent timecode (h, m, s, f)
 
     def _make_socket(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -535,13 +536,12 @@ class ArtnetSender:
                 age = nowm - float(track.last_recv_monotonic or 0.0)
 
                 if (not signal_ok) or (track.last_recv_monotonic <= 0):
-                    if not self.cfg.stop_sending_when_no_signal:
-                        pkt = build_arttimecode_packet(0, 0, 0, 0, self.cfg.artnet_type, self.cfg.artnet_stream_id)
-                        try:
-                            self.sock.sendto(pkt, (self.cfg.artnet_target_ip, int(self.cfg.artnet_port)))
-                        except Exception as e:
-                            self.ui_queue.put(("error", f"Art-Net send error: {e}"))
-
+                    # No signal - stop sending if timecode was previously being sent
+                    if self.last_sent_timecode is not None:
+                        print("[DEBUG] Art-Net: Stopping timecode send (no signal)")
+                        self.last_sent_timecode = None
+                    
+                    # Don't send anything when there's no signal
                     next_send += period
                     dt = next_send - time.monotonic()
                     if dt > 0:
@@ -559,14 +559,18 @@ class ArtnetSender:
                 effective_ms += int(offset_ms) + int(self.cfg.global_shift_ms)
 
                 h, m, s, f = ms_to_timecode_fields(effective_ms, fps=fps)
-                pkt = build_arttimecode_packet(h, m, s, f, self.cfg.artnet_type, self.cfg.artnet_stream_id)
+                
+                # Only send if timecode changed
+                current_timecode = (h, m, s, f)
+                if current_timecode != self.last_sent_timecode:
+                    pkt = build_arttimecode_packet(h, m, s, f, self.cfg.artnet_type, self.cfg.artnet_stream_id)
 
-                try:
-                    self.sock.sendto(pkt, (self.cfg.artnet_target_ip, int(self.cfg.artnet_port)))
-                except Exception as e:
-                    self.ui_queue.put(("error", f"Art-Net send error: {e}"))
-
-                self.ui_queue.put(("tick", (h, m, s, f)))
+                    try:
+                        self.sock.sendto(pkt, (self.cfg.artnet_target_ip, int(self.cfg.artnet_port)))
+                        self.last_sent_timecode = current_timecode
+                        self.ui_queue.put(("tick", (h, m, s, f)))
+                    except Exception as e:
+                        self.ui_queue.put(("error", f"Art-Net send error: {e}"))
 
                 next_send += period
                 dt = next_send - time.monotonic()
