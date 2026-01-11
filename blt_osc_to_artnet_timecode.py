@@ -211,8 +211,10 @@ class SharedState:
             if device_id not in self.players:
                 self.players[device_id] = TrackState()
                 player_list_changed = True
+                print(f"[DEBUG] New player detected: {device_id}")
             
             player = self.players[device_id]
+            old_bpm = player.bpm
             player.device_id = str(device_id)
             player.is_on_air = bool(is_on_air)
             player.track_time_ms = int(track_time_ms)
@@ -229,6 +231,7 @@ class SharedState:
                     self.last_on_air_time[device_id] = nowm
                     # Auto-select this player as it went on air
                     if self.active_player_id != device_id:
+                        print(f"[DEBUG] Player {device_id} went ON AIR - auto-selecting")
                         self.active_player_id = device_id
                         active_changed = True
                 else:
@@ -237,15 +240,18 @@ class SharedState:
                         current_on_air_time = self.last_on_air_time.get(self.active_player_id, 0)
                         if nowm > current_on_air_time and self.active_player_id != device_id:
                             self.last_on_air_time[device_id] = nowm
+                            print(f"[DEBUG] Player {device_id} went ON AIR (more recent) - auto-selecting")
                             self.active_player_id = device_id
                             active_changed = True
             else:
                 # Remove from on_air tracking if no longer on air
                 if device_id in self.last_on_air_time:
+                    print(f"[DEBUG] Player {device_id} went OFF AIR")
                     del self.last_on_air_time[device_id]
             
             # If no active player is set, auto-select the first one
             if self.active_player_id is None and device_id:
+                print(f"[DEBUG] Auto-selecting first player: {device_id}")
                 self.active_player_id = device_id
                 active_changed = True
             
@@ -257,6 +263,7 @@ class SharedState:
                 
                 # Check if BPM changed
                 if abs(self.track.bpm - self.last_bpm) > 0.01:
+                    print(f"[DEBUG] BPM changed: {self.last_bpm:.2f} -> {self.track.bpm:.2f} (Player: {self.active_player_id})")
                     self.last_bpm = self.track.bpm
                     bpm_changed = True
             
@@ -1450,6 +1457,7 @@ BPM Not Updating:
         
         # Enter simulation mode
         self.state.set_simulation_mode(True)
+        print(f"[DEBUG] Entering SIMULATION MODE (previous active: {self.playback_previous_active})")
         self._update_mode_indicators()
         
         # Get playback position from slider
@@ -1510,10 +1518,12 @@ BPM Not Updating:
         self.state.remove_player("SIM1")
         if hasattr(self, 'playback_previous_active') and self.playback_previous_active:
             if self.playback_previous_active != "SIM1":
+                print(f"[DEBUG] Restoring previous active player: {self.playback_previous_active}")
                 self.state.set_active_player(self.playback_previous_active)
         
         # Exit simulation mode
         self.state.set_simulation_mode(False)
+        print("[DEBUG] Exiting SIMULATION MODE")
         self._update_mode_indicators()
         self._update_player_button_structure()  # Refresh UI to remove SIM1 button
         
@@ -1706,6 +1716,7 @@ BPM Not Updating:
         try:
             self.osc = OscReceiver(self.cfg, self.state, self.ui_queue)
             self.osc.start()
+            print(f"[DEBUG] OSC receiver started on {self.cfg.osc_listen_ip}:{self.cfg.osc_listen_port} (path: {self.cfg.osc_path})")
         except Exception as e:
             self.osc = None
             messagebox.showerror("OSC error", f"Could not start OSC server:\n{e}")
@@ -1714,6 +1725,7 @@ BPM Not Updating:
         try:
             self.artnet = ArtnetSender(self.cfg, self.state, self.ui_queue)
             self.artnet.start()
+            print(f"[DEBUG] Art-Net sender started (target: {self.cfg.artnet_target_ip}:{self.cfg.artnet_port})")
         except Exception as e:
             self.artnet = None
             messagebox.showerror("Art-Net error", f"Could not start Art-Net sender:\n{e}")
@@ -1725,6 +1737,7 @@ BPM Not Updating:
         try:
             self.osc_sender = OscSender(self.cfg, self.state, self.ui_queue)
             self.osc_sender.start()
+            print(f"[DEBUG] OSC sender started (target: {self.cfg.osc_output_ip}:{self.cfg.osc_output_port})")
         except Exception as e:
             self.osc_sender = None
             messagebox.showerror("OSC Sender error", f"Could not start OSC sender:\n{e}")
@@ -1750,6 +1763,7 @@ BPM Not Updating:
         if self.osc_sender:
             self.osc_sender.stop()
             self.osc_sender = None
+        print("[DEBUG] All services stopped")
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.ui_queue.put(("info", "Stopped"))
@@ -1860,6 +1874,7 @@ BPM Not Updating:
         """Manually select a player."""
         changed = self.state.set_active_player(device_id)
         if changed:
+            print(f"[DEBUG] Manually selected player: {device_id}")
             self._update_player_selection()
             self._refresh_status()
             # Send BPM update if needed
