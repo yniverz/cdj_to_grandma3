@@ -1516,7 +1516,8 @@ BPM Not Updating:
         self.state.set_forced_offset(self.playback_selected_entry.offset_ms, 
                                      f"{self.playback_selected_entry.rekordbox_id} - {self.playback_selected_entry.title}")
         print(f"[DEBUG] Entering SIMULATION MODE (previous active: {self.playback_previous_active})")
-        print(f"[DEBUG] Forced offset: {self.playback_selected_entry.offset_ms}ms for '{self.playback_selected_entry.title}'")
+        offset_ms, label = self._calculate_match()
+        print(f"[DEBUG] Forced offset: {offset_ms}ms for '{label}'")
         self._update_mode_indicators()
         
         # Get playback position from slider
@@ -1531,7 +1532,7 @@ BPM Not Updating:
         self.btn_playback_stop.config(state="normal")
         
         # Update info with offset being used
-        offset_secs = self.playback_selected_entry.offset_ms // 1000
+        offset_secs = offset_ms // 1000
         offset_mins = offset_secs // 60
         offset_sec = offset_secs % 60
         self.lbl_playback_info.configure(
@@ -1584,6 +1585,7 @@ BPM Not Updating:
         self.state.set_simulation_mode(False)
         self.state.clear_forced_offset()
         print("[DEBUG] Exiting SIMULATION MODE")
+        self._calculate_match()  # Recalculate match without forced offset
         self._update_mode_indicators()
         self._update_player_button_structure()  # Refresh UI to remove SIM1 button
         
