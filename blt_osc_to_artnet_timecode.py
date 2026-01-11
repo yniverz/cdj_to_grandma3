@@ -410,8 +410,16 @@ class OscReceiver:
         if len(args) >= 1:
             device_id = str(args[0])
         if len(args) >= 2:
-            # Handle is_on_air as bool or int (0/1)
-            is_on_air = bool(args[1]) if isinstance(args[1], (bool, int)) else False
+            # Handle is_on_air as bool, int (0/1), or string ('true'/'false')
+            val = args[1]
+            if isinstance(val, bool):
+                is_on_air = val
+            elif isinstance(val, int):
+                is_on_air = bool(val)
+            elif isinstance(val, str):
+                is_on_air = val.lower() in ('true', '1', 'yes')
+            else:
+                is_on_air = False
         if len(args) >= 3 and isinstance(args[2], (int, float)):
             track_time_ms = int(args[2])
         if len(args) >= 4:
