@@ -356,6 +356,13 @@ class SharedState:
             if self.active_player_id == device_id:
                 self.active_player_id = None
                 self.signal_ok = False
+    
+    def trigger_offset_match(self):
+        """Manually trigger offset matching for the active player's current track."""
+        with self._lock:
+            if self.active_player_id and self.active_player_id in self.players:
+                return True
+        return False
 
 
 # ----------------------------
@@ -1343,6 +1350,9 @@ BPM Not Updating:
                     e.offset_ms = offset_ms
                     self._refresh_offsets_tree()
                     self.clear_entry_fields()
+                    # Trigger offset rematch since offset changed
+                    print("[DEBUG] Offset updated - triggering rematch")
+                    self._trigger_offset_rematch()
                     return
 
         # Otherwise, create new entry
@@ -1358,6 +1368,10 @@ BPM Not Updating:
         self._refresh_offsets_tree()
         self._refresh_playback_offsets()  # Update playback tab too
         self.clear_entry_fields()
+        
+        # Trigger offset rematch since the offset list changed
+        print("[DEBUG] Offset list changed - triggering rematch")
+        self._trigger_offset_rematch()
 
     def delete_selected_entry(self):
         sel = self.tree.selection()
@@ -1368,6 +1382,10 @@ BPM Not Updating:
         self.cfg.offsets = [e for e in self.cfg.offsets if e.entry_id != entry_id]
         self._refresh_offsets_tree()
         self._refresh_playback_offsets()  # Update playback tab too
+        
+        # Trigger offset rematch since the offset list changed
+        print("[DEBUG] Offset list changed - triggering rematch")
+        self._trigger_offset_rematch()
 
     # ---- Playback simulation methods ----
 
@@ -1809,7 +1827,7 @@ BPM Not Updating:
                     if active_changed:
                         self._update_player_selection()
                     # Update offset matching if track changed
-                    if match_changed:
+                    if match_changed or active_changed:
                         track, _, _, _ = self.state.snapshot()
                         offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
                         self.state.set_match(offset_ms, label)
@@ -1898,6 +1916,14 @@ BPM Not Updating:
             else:
                 btn.state(['!pressed'])
     
+    def _trigger_offset_rematch(self):
+        """Helper to trigger offset matching for current active player."""
+        if self.state.trigger_offset_match():
+            track, _, _, _ = self.state.snapshot()
+            offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
+            self.state.set_match(offset_ms, label)
+            self._refresh_status()
+    
     def _select_player(self, device_id: str):
         """Manually select a player."""
         changed = self.state.set_active_player(device_id)
@@ -1905,6 +1931,11 @@ BPM Not Updating:
             print(f"[DEBUG] Manually selected player: {device_id}")
             self._update_player_selection()
             self._refresh_status()
+            # Trigger offset matching for the newly selected player
+            if self.state.trigger_offset_match():
+                track, _, _, _ = self.state.snapshot()
+                offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
+                self.state.set_match(offset_ms, label)
             # Send BPM update if needed
             if self.osc_sender:
                 track, _, _, _ = self.state.snapshot()
