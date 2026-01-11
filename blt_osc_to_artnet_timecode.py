@@ -106,7 +106,7 @@ class AppConfig:
     # OSC listen (HARDCODED - not UI configurable)
     osc_listen_ip: str = "0.0.0.0"
     osc_listen_port: int = 9000
-    osc_path: str = "/blt/track"
+    osc_path: str = "/blt/player"
 
     # Art-Net send
     artnet_target_ip: str = "127.0.0.1"  # common Art-Net broadcast
@@ -170,6 +170,8 @@ def config_from_json(d: Dict[str, Any]) -> AppConfig:
 
 @dataclass
 class TrackState:
+    device_id: str = ""
+    is_on_air: bool = False
     track_time_ms: int = 0
     rekordbox_id: str = ""
     title: str = ""
@@ -188,34 +190,82 @@ class SharedState:
         self.last_bpm = 0.0  # Track BPM changes
         self.simulation_mode = False  # True when playback simulation is active
 
+        # Multi-player tracking
+        self.players = {}  # type: Dict[str, TrackState]  # device_id -> TrackState
+        self.active_player_id = None  # type: Optional[str]  # currently selected player
+        self.last_on_air_time = {}  # type: Dict[str, float]  # device_id -> last time went on air
+
         # For OSC updates/sec:
         # store monotonic timestamps of recent updates
         self._osc_times = deque()  # type: deque[float]
 
-    def update_from_osc(self, track_time_ms: int, rekordbox_id: str, title: str, bpm: float = 0.0):
+    def update_from_osc(self, device_id: str, is_on_air: bool, track_time_ms: int, rekordbox_id: str, title: str, bpm: float = 0.0):
         nowm = time.monotonic()
         bpm_changed = False
+        player_list_changed = False
+        active_changed = False
+        
         with self._lock:
-            self.track.track_time_ms = int(track_time_ms)
-            self.track.rekordbox_id = str(rekordbox_id or "")
-            self.track.title = str(title or "")
-            self.track.bpm = float(bpm)
-            self.track.last_recv_monotonic = nowm
-            self.track.last_recv_time_ms = int(track_time_ms)
-            self.signal_ok = True
-
-            # Check if BPM changed
-            if abs(self.track.bpm - self.last_bpm) > 0.01:
-                self.last_bpm = self.track.bpm
-                bpm_changed = True
-
+            # Update or create player state
+            if device_id not in self.players:
+                self.players[device_id] = TrackState()
+                player_list_changed = True
+            
+            player = self.players[device_id]
+            player.device_id = str(device_id)
+            player.is_on_air = bool(is_on_air)
+            player.track_time_ms = int(track_time_ms)
+            player.rekordbox_id = str(rekordbox_id or "")
+            player.title = str(title or "")
+            player.bpm = float(bpm)
+            player.last_recv_monotonic = nowm
+            player.last_recv_time_ms = int(track_time_ms)
+            
+            # Track when player went on air
+            if is_on_air:
+                if device_id not in self.last_on_air_time:
+                    self.last_on_air_time[device_id] = nowm
+                    # Auto-select this player as it went on air
+                    if self.active_player_id != device_id:
+                        self.active_player_id = device_id
+                        active_changed = True
+                else:
+                    # Check if this is more recent than current active player
+                    if self.active_player_id:
+                        current_on_air_time = self.last_on_air_time.get(self.active_player_id, 0)
+                        if nowm > current_on_air_time and self.active_player_id != device_id:
+                            self.last_on_air_time[device_id] = nowm
+                            self.active_player_id = device_id
+                            active_changed = True
+            else:
+                # Remove from on_air tracking if no longer on air
+                if device_id in self.last_on_air_time:
+                    del self.last_on_air_time[device_id]
+            
+            # If no active player is set, auto-select the first one
+            if self.active_player_id is None and device_id:
+                self.active_player_id = device_id
+                active_changed = True
+            
+            # Update main track state with active player's data
+            if self.active_player_id and self.active_player_id in self.players:
+                active_player = self.players[self.active_player_id]
+                self.track = TrackState(**asdict(active_player))
+                self.signal_ok = True
+                
+                # Check if BPM changed
+                if abs(self.track.bpm - self.last_bpm) > 0.01:
+                    self.last_bpm = self.track.bpm
+                    bpm_changed = True
+            
             # record timestamp for rate calculation
             self._osc_times.append(nowm)
             # prune old values beyond a few seconds to keep deque small
             cutoff = nowm - 5.0
             while self._osc_times and self._osc_times[0] < cutoff:
                 self._osc_times.popleft()
-        return bpm_changed
+        
+        return bpm_changed, player_list_changed, active_changed
 
     def snapshot(self) -> Tuple[TrackState, int, str, bool]:
         with self._lock:
@@ -255,6 +305,27 @@ class SharedState:
     def is_simulation_mode(self) -> bool:
         with self._lock:
             return self.simulation_mode
+    
+    def get_players(self) -> Dict[str, TrackState]:
+        """Return a snapshot of all players."""
+        with self._lock:
+            return {k: TrackState(**asdict(v)) for k, v in self.players.items()}
+    
+    def get_active_player_id(self) -> Optional[str]:
+        """Return the currently active player ID."""
+        with self._lock:
+            return self.active_player_id
+    
+    def set_active_player(self, device_id: str) -> bool:
+        """Manually set the active player. Returns True if changed."""
+        with self._lock:
+            if device_id in self.players and self.active_player_id != device_id:
+                self.active_player_id = device_id
+                # Update main track state
+                active_player = self.players[device_id]
+                self.track = TrackState(**asdict(active_player))
+                return True
+            return False
 
 
 # ----------------------------
@@ -313,8 +384,9 @@ class OscReceiver:
     def _handler(self, address: str, *args):
         """
         Accept shapes:
-          /blt/track track_time_ms rekordbox_id title bpm
-        Expected: track_time_ms (int), rekordbox_id (int/str), title (str), bpm (float)
+          /blt/player device_id is_on_air track_time_ms rekordbox_id title bpm
+        Expected: device_id (str), is_on_air (bool/int), track_time_ms (int), 
+                  rekordbox_id (int/str), title (str), bpm (float)
         """
         # Ignore OSC data when in simulation mode
         if self.state.is_simulation_mode():
@@ -323,27 +395,36 @@ class OscReceiver:
         if not args:
             return
 
-        # Expected format: track_time_ms, rekordbox_id, title, bpm
+        # Expected format: device_id, is_on_air, track_time_ms, rekordbox_id, title, bpm
+        device_id = ""
+        is_on_air = False
         track_time_ms = None
         rekordbox_id = ""
         title = ""
         bpm = 0.0
 
         # Extract parameters based on expected positions
-        if len(args) >= 1 and isinstance(args[0], (int, float)):
-            track_time_ms = int(args[0])
+        if len(args) >= 1:
+            device_id = str(args[0])
         if len(args) >= 2:
-            rekordbox_id = str(args[1])
-        if len(args) >= 3:
-            title = str(args[2])
-        if len(args) >= 4 and isinstance(args[3], (int, float)):
-            bpm = float(args[3])
+            # Handle is_on_air as bool or int (0/1)
+            is_on_air = bool(args[1]) if isinstance(args[1], (bool, int)) else False
+        if len(args) >= 3 and isinstance(args[2], (int, float)):
+            track_time_ms = int(args[2])
+        if len(args) >= 4:
+            rekordbox_id = str(args[3])
+        if len(args) >= 5:
+            title = str(args[4])
+        if len(args) >= 6 and isinstance(args[5], (int, float)):
+            bpm = float(args[5])
 
-        if track_time_ms is None:
+        if track_time_ms is None or not device_id:
             return
 
-        bpm_changed = self.state.update_from_osc(track_time_ms, rekordbox_id, title, bpm)
-        self.ui_queue.put(("osc_update", bpm_changed))
+        bpm_changed, player_list_changed, active_changed = self.state.update_from_osc(
+            device_id, is_on_air, track_time_ms, rekordbox_id, title, bpm
+        )
+        self.ui_queue.put(("osc_update", (bpm_changed, player_list_changed, active_changed)))
 
     def start(self):
         if Dispatcher is None or ThreadingOSCUDPServer is None:
@@ -846,7 +927,7 @@ class App(tk.Tk):
         self.lbl_status_mode.pack(side="left")
 
         box = ttk.LabelFrame(f, text="Live status")
-        box.pack(fill="both", expand=True, padx=10, pady=10)
+        box.pack(fill="both", expand=False, padx=10, pady=10)
 
         self.lbl_signal = ttk.Label(box, text="Signal: (waiting)")
         self.lbl_signal.pack(anchor="w", padx=8, pady=(8, 4))
@@ -872,6 +953,29 @@ class App(tk.Tk):
         self.lbl_err = ttk.Label(box, text="", foreground="red")
         self.lbl_err.pack(anchor="w", padx=8, pady=(10, 4))
 
+        # Player selector section
+        player_box = ttk.LabelFrame(f, text="Player Selection")
+        player_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Scrollable frame for players
+        canvas = tk.Canvas(player_box, height=150)
+        scrollbar = ttk.Scrollbar(player_box, orient="vertical", command=canvas.yview)
+        self.player_selector_frame = ttk.Frame(canvas)
+
+        self.player_selector_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=self.player_selector_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        scrollbar.pack(side="right", fill="y")
+
+        # Dictionary to track player buttons
+        self.player_buttons = {}  # device_id -> (button, label_frame)
+
     def _build_help_tab(self):
         f = self.tab_help
 
@@ -896,19 +1000,28 @@ OSC INPUT (FIXED CONFIGURATION)
 This application listens for OSC messages on:
   • IP: 0.0.0.0 (all network interfaces)
   • Port: 9000
-  • Path: /blt/track
+  • Path: /blt/player
 
 Expected OSC Message Format:
-  /blt/track <track_time_ms> <rekordbox_id> <title> <bpm>
+  /blt/player <device_id> <is_on_air> <track_time_ms> <rekordbox_id> <title> <bpm>
 
   Parameters:
+    • device_id (str)        - Player/device identifier (e.g., "CDJ1", "CDJ2")
+    • is_on_air (bool/int)   - Whether this player is currently on air (1/0 or true/false)
     • track_time_ms (int)    - Current position in track (milliseconds)
     • rekordbox_id (str)     - Rekordbox track ID
     • title (str)            - Track title
     • bpm (float)            - Current track BPM
 
   Example:
-    /blt/track 123456 987654 "My Track" 128.0
+    /blt/player "CDJ1" 1 123456 987654 "My Track" 128.0
+
+Multi-Player Behavior:
+  • The application tracks all players that send data
+  • Players can be manually selected via the Status tab
+  • When a player goes "on air", it automatically becomes the active player
+  • If multiple players are on air, the most recently activated one is selected
+  • Manual selection is available when mixer data is unavailable (is_on_air always false)
 
 Configure Beat Link Trigger to send OSC messages in this format to port 9000.
 
@@ -1499,8 +1612,10 @@ BPM Not Updating:
             
             track_time_ms = int(pos * 1000)
             
-            # Send simulated OSC data
-            bpm_changed = self.state.update_from_osc(
+            # Send simulated OSC data (use a simulated device_id for playback)
+            bpm_changed, player_list_changed, active_changed = self.state.update_from_osc(
+                "SIM1",  # simulated device ID
+                False,  # is_on_air = False for simulation
                 track_time_ms,
                 self.playback_selected_entry.rekordbox_id,
                 self.playback_selected_entry.title,
@@ -1607,10 +1722,15 @@ BPM Not Updating:
                 if kind == "error":
                     self.lbl_err.configure(text=str(payload))
                 elif kind == "osc_update":
-                    # payload is bpm_changed boolean
-                    if payload and self.osc_sender:
+                    # payload is (bpm_changed, player_list_changed, active_changed)
+                    bpm_changed, player_list_changed, active_changed = payload
+                    if bpm_changed and self.osc_sender:
                         track, _, _, _ = self.state.snapshot()
                         self.osc_sender.send_bpm_update(track.bpm)
+                    if player_list_changed:
+                        self._update_player_buttons()
+                    if active_changed:
+                        self._update_player_selection()
                     self._refresh_status()
                 elif kind == "osc_sent":
                     # payload is (bpm1, bpm2)
@@ -1622,6 +1742,66 @@ BPM Not Updating:
         except queue.Empty:
             pass
         self.after(50, self._poll_ui_queue)
+
+    def _update_player_buttons(self):
+        """Update the player selector buttons based on current players."""
+        players = self.state.get_players()
+        
+        # Add buttons for new players
+        for device_id, player in players.items():
+            if device_id not in self.player_buttons:
+                # Create frame for this player
+                player_frame = ttk.Frame(self.player_selector_frame)
+                player_frame.pack(fill="x", padx=5, pady=2)
+                
+                # Create toggle button
+                btn = ttk.Button(
+                    player_frame,
+                    text=f"Device {device_id}",
+                    command=lambda did=device_id: self._select_player(did),
+                    width=15
+                )
+                btn.pack(side="left", padx=(0, 10))
+                
+                # Create label for track title
+                lbl = ttk.Label(player_frame, text="-")
+                lbl.pack(side="left", fill="x", expand=True)
+                
+                self.player_buttons[device_id] = (btn, lbl, player_frame)
+        
+        # Update labels with current track info
+        for device_id, player in players.items():
+            if device_id in self.player_buttons:
+                _, lbl, _ = self.player_buttons[device_id]
+                title = player.title or "(no title)"
+                on_air_marker = " [ON AIR]" if player.is_on_air else ""
+                lbl.configure(text=f"{title}{on_air_marker}")
+        
+        # Update button states
+        self._update_player_selection()
+    
+    def _update_player_selection(self):
+        """Update button states to reflect active player."""
+        active_id = self.state.get_active_player_id()
+        
+        for device_id, (btn, lbl, frame) in self.player_buttons.items():
+            if device_id == active_id:
+                # Highlight active player button
+                btn.state(['pressed'])
+            else:
+                btn.state(['!pressed'])
+    
+    def _select_player(self, device_id: str):
+        """Manually select a player."""
+        changed = self.state.set_active_player(device_id)
+        if changed:
+            self._update_player_selection()
+            self._refresh_status()
+            # Send BPM update if needed
+            if self.osc_sender:
+                track, _, _, _ = self.state.snapshot()
+                if track.bpm > 0:
+                    self.osc_sender.send_bpm_update(track.bpm)
 
     def _refresh_status(self):
         track, matched_offset_ms, matched_label, signal_ok = self.state.snapshot()
