@@ -531,32 +531,15 @@ class ArtnetSender:
             send_rate = max(1, int(self.cfg.send_rate_hz))
             period = 1.0 / float(send_rate)
             next_send = time.monotonic()
-            current_offset_ms = 0
-            has_valid_match = False
 
             while not self._stop.is_set():
                 track, matched_offset_ms, matched_label, signal_ok = self.state.snapshot()
 
-                # Check if we need to update matching (only when explicitly signaled)
-                try:
-                    while True:
-                        kind, payload = self.ui_queue.get_nowait()
-                        if kind == "match_update":
-                            offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
-                            if offset_ms != matched_offset_ms or label != matched_label:
-                                self.state.set_match(offset_ms, label)
-                                current_offset_ms = offset_ms
-                                has_valid_match = (label != "(none)")
-                                if has_valid_match:
-                                    print(f"[DEBUG] Art-Net: Offset match found - {label}")
-                                else:
-                                    print(f"[DEBUG] Art-Net: No offset match - timecode sending disabled")
-                        self.ui_queue.task_done()
-                except:
-                    pass
-
                 nowm = time.monotonic()
                 age = nowm - float(track.last_recv_monotonic or 0.0)
+                
+                # Check if we have a valid offset match
+                has_valid_match = (matched_label != "(none)")
 
                 if (not signal_ok) or (track.last_recv_monotonic <= 0) or not has_valid_match:
                     # No signal or no valid match - stop sending if timecode was previously being sent
@@ -580,7 +563,7 @@ class ArtnetSender:
                 else:
                     effective_ms = track.last_recv_time_ms
 
-                effective_ms += int(current_offset_ms) + int(self.cfg.global_shift_ms)
+                effective_ms += int(matched_offset_ms) + int(self.cfg.global_shift_ms)
 
                 h, m, s, f = ms_to_timecode_fields(effective_ms, fps=fps)
                 
@@ -1819,7 +1802,13 @@ BPM Not Updating:
                         self._update_player_selection()
                     # Update offset matching if track changed
                     if match_changed:
-                        self.ui_queue.put(("match_update", None))
+                        track, _, _, _ = self.state.snapshot()
+                        offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
+                        self.state.set_match(offset_ms, label)
+                        if label != "(none)":
+                            print(f"[DEBUG] Offset match found: {label}")
+                        else:
+                            print(f"[DEBUG] No offset match for track")
                     self._refresh_status()
                 elif kind == "osc_sent":
                     # payload is (bpm1, bpm2)
