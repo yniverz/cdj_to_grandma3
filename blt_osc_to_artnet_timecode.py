@@ -374,12 +374,15 @@ def best_offset_for_track(cfg: AppConfig, rekordbox_id: str, title: str) -> Tupl
     """
     rb = str(rekordbox_id or "").strip()
     tnorm = normalize_title(title)
+    
+    print(f"[DEBUG] Matching: rekordbox_id='{rb}', title='{title}'")
 
     # 1) Exact ID match
     if rb:
         for e in cfg.offsets:
             if e.rekordbox_id and str(e.rekordbox_id).strip() == rb:
                 label = f"ID match: {rb} → offset {e.offset_ms} ms"
+                print(f"[DEBUG] Found exact ID match: {label}")
                 return int(e.offset_ms), label
 
     # 2) Fuzzy title match
@@ -394,8 +397,13 @@ def best_offset_for_track(cfg: AppConfig, rekordbox_id: str, title: str) -> Tupl
                         f"Title match ({score:.2f}): '{e.title}' → offset {e.offset_ms} ms",
                         score)
         if best[2] >= float(cfg.fuzzy_threshold):
+            print(f"[DEBUG] Found fuzzy title match: {best[1]}")
             return best[0], best[1]
+        else:
+            if best[2] > 0:
+                print(f"[DEBUG] Best title match score {best[2]:.2f} below threshold {cfg.fuzzy_threshold}")
 
+    print(f"[DEBUG] No offset match found for this track")
     return 0, "(none)"
 
 
