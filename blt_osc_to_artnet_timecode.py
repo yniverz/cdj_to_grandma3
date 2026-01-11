@@ -678,10 +678,6 @@ class App(tk.Tk):
         self.playback_audio_lock = threading.Lock()  # Prevent concurrent audio starts
         self.playback_slider_updating = False  # Prevent seek during slider updates
         self.playback_was_playing_before_seek = False  # Track if playing before slider grab
-        
-        # Throttle player button updates to avoid UI interference
-        self._last_player_button_update = 0
-        self._player_button_update_interval = 0.2  # Update at most every 200ms (5 times/sec)
 
         self._build_ui()
         self._refresh_status()
@@ -1519,7 +1515,7 @@ BPM Not Updating:
         # Exit simulation mode
         self.state.set_simulation_mode(False)
         self._update_mode_indicators()
-        self._update_player_buttons()  # Refresh UI to remove SIM1 button
+        self._update_player_button_structure()  # Refresh UI to remove SIM1 button
         
         # Reset controls
         self.btn_playback_play.config(state="normal")
@@ -1772,8 +1768,11 @@ BPM Not Updating:
                     if bpm_changed and self.osc_sender:
                         track, _, _, _ = self.state.snapshot()
                         self.osc_sender.send_bpm_update(track.bpm)
-                    # Update player buttons with throttling, but force update if player list changed
-                    self._update_player_buttons(force=player_list_changed)
+                    # Update structure only if players added/removed
+                    if player_list_changed:
+                        self._update_player_button_structure()
+                    # Always update text labels (lightweight, doesn't interfere with clicks)
+                    self._update_player_button_labels()
                     if active_changed:
                         self._update_player_selection()
                     self._refresh_status()
@@ -1788,18 +1787,10 @@ BPM Not Updating:
             pass
         self.after(50, self._poll_ui_queue)
 
-    def _update_player_buttons(self, force=False):
-        """Update the player selector buttons based on current players.
-        
-        Args:
-            force: If True, update immediately regardless of throttle interval
+    def _update_player_button_structure(self):
+        """Update the player button structure (add/remove players).
+        Only called when players are added or removed.
         """
-        # Throttle updates to avoid UI interference (unless forced)
-        now = time.time()
-        if not force and (now - self._last_player_button_update) < self._player_button_update_interval:
-            return
-        
-        self._last_player_button_update = now
         players = self.state.get_players()
         
         # Remove buttons for players that no longer exist
@@ -1831,6 +1822,15 @@ BPM Not Updating:
                 
                 self.player_buttons[device_id] = (btn, lbl, player_frame)
         
+        # Update button states
+        self._update_player_selection()
+    
+    def _update_player_button_labels(self):
+        """Update only the text labels for existing players.
+        Called frequently to show live percentage updates.
+        """
+        players = self.state.get_players()
+        
         # Update labels with current track info
         for device_id, player in players.items():
             if device_id in self.player_buttons:
@@ -1846,9 +1846,6 @@ BPM Not Updating:
                     percentage_str = ""
                 
                 lbl.configure(text=f"{title}{on_air_marker}{percentage_str}")
-        
-        # Update button states
-        self._update_player_selection()
     
     def _update_player_selection(self):
         """Update button states to reflect active player."""
