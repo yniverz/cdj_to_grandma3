@@ -388,6 +388,9 @@ class OscReceiver:
         Expected: device_id (str), is_on_air (bool/int), track_time_ms (int), 
                   rekordbox_id (int/str), title (str), bpm (float)
         """
+
+        print("OSC received:", address, args)
+
         # Ignore OSC data when in simulation mode
         if self.state.is_simulation_mode():
             return
