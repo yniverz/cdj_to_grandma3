@@ -190,6 +190,8 @@ class SharedState:
         self.signal_ok = False
         self.last_bpm = 0.0  # Track BPM changes
         self.simulation_mode = False  # True when playback simulation is active
+        self.forced_offset_ms = None  # type: Optional[int]  # Force this offset in simulation mode
+        self.forced_offset_label = None  # type: Optional[str]  # Label for forced offset
 
         # Multi-player tracking
         self.players = {}  # type: Dict[str, TrackState]  # device_id -> TrackState
@@ -323,6 +325,23 @@ class SharedState:
     def is_simulation_mode(self) -> bool:
         with self._lock:
             return self.simulation_mode
+    
+    def set_forced_offset(self, offset_ms: int, label: str):
+        """Force a specific offset (for simulation mode)."""
+        with self._lock:
+            self.forced_offset_ms = offset_ms
+            self.forced_offset_label = label
+    
+    def clear_forced_offset(self):
+        """Clear forced offset."""
+        with self._lock:
+            self.forced_offset_ms = None
+            self.forced_offset_label = None
+    
+    def get_forced_offset(self) -> Tuple[Optional[int], Optional[str]]:
+        """Get forced offset if set."""
+        with self._lock:
+            return (self.forced_offset_ms, self.forced_offset_label)
     
     def get_players(self) -> Dict[str, TrackState]:
         """Return a snapshot of all players."""
@@ -1492,9 +1511,12 @@ BPM Not Updating:
         # Store current active player to restore later
         self.playback_previous_active = self.state.get_active_player_id()
         
-        # Enter simulation mode
+        # Enter simulation mode and force the selected offset
         self.state.set_simulation_mode(True)
+        self.state.set_forced_offset(self.playback_selected_entry.offset_ms, 
+                                     f"{self.playback_selected_entry.rekordbox_id} - {self.playback_selected_entry.title}")
         print(f"[DEBUG] Entering SIMULATION MODE (previous active: {self.playback_previous_active})")
+        print(f"[DEBUG] Forced offset: {self.playback_selected_entry.offset_ms}ms for '{self.playback_selected_entry.title}'")
         self._update_mode_indicators()
         
         # Get playback position from slider
@@ -1558,8 +1580,9 @@ BPM Not Updating:
                 print(f"[DEBUG] Restoring previous active player: {self.playback_previous_active}")
                 self.state.set_active_player(self.playback_previous_active)
         
-        # Exit simulation mode
+        # Exit simulation mode and clear forced offset
         self.state.set_simulation_mode(False)
+        self.state.clear_forced_offset()
         print("[DEBUG] Exiting SIMULATION MODE")
         self._update_mode_indicators()
         self._update_player_button_structure()  # Refresh UI to remove SIM1 button
@@ -1919,9 +1942,17 @@ BPM Not Updating:
     def _trigger_offset_rematch(self):
         """Helper to trigger offset matching for current active player."""
         if self.state.trigger_offset_match():
-            track, _, _, _ = self.state.snapshot()
-            offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
-            self.state.set_match(offset_ms, label)
+            # Check if we have a forced offset (simulation mode)
+            forced_offset_ms, forced_offset_label = self.state.get_forced_offset()
+            if forced_offset_ms is not None:
+                # Use forced offset instead of matching
+                print(f"[DEBUG] Using forced offset: {forced_offset_label} ({forced_offset_ms}ms)")
+                self.state.set_match(forced_offset_ms, forced_offset_label)
+            else:
+                # Normal matching logic
+                track, _, _, _ = self.state.snapshot()
+                offset_ms, label = best_offset_for_track(self.cfg, track.rekordbox_id, track.title)
+                self.state.set_match(offset_ms, label)
             self._refresh_status()
     
     def _select_player(self, device_id: str):
