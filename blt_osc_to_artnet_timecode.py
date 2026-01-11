@@ -444,12 +444,13 @@ class OscReceiver:
         print("Starting OSC server on {}:{}".format(self.cfg.osc_listen_ip, self.cfg.osc_listen_port))
         print("Listening for OSC messages on path: {}".format(self.cfg.osc_path))
         disp = Dispatcher()
-        disp.map(self.cfg.osc_path, self._handler)
         
-        # Add catch-all handler for debugging (for messages that DON'T match our path)
-        def catch_all(addr, *args):
-            print(f"OSC received on unhandled path: {addr} with args: {args}")
-        disp.set_default_handler(catch_all)
+        # Map the handler
+        disp.map(self.cfg.osc_path, self._handler)
+        print(f"Mapped handler to path: {self.cfg.osc_path}")
+        
+        # Debug: print all registered handlers
+        print(f"Dispatcher has handlers: {disp._map}")
 
         self.server = ThreadingOSCUDPServer((self.cfg.osc_listen_ip, int(self.cfg.osc_listen_port)), disp)
 
