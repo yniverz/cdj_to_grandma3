@@ -1800,8 +1800,8 @@ BPM Not Updating:
                 frame.destroy()
                 del self.player_buttons[device_id]
         
-        # Add buttons for new players
-        for device_id, player in players.items():
+        # Add buttons for new players (sorted alphabetically)
+        for device_id in sorted(players.keys()):
             if device_id not in self.player_buttons:
                 # Create frame for this player
                 player_frame = ttk.Frame(self.player_selector_frame)
@@ -1810,7 +1810,7 @@ BPM Not Updating:
                 # Create toggle button
                 btn = ttk.Button(
                     player_frame,
-                    text=f"Device {device_id}",
+                    text=device_id,
                     command=lambda did=device_id: self._select_player(did),
                     width=15
                 )
