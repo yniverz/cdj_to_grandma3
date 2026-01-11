@@ -1793,34 +1793,32 @@ BPM Not Updating:
         """
         players = self.state.get_players()
         
-        # Remove buttons for players that no longer exist
+        # Destroy all existing buttons
         for device_id in list(self.player_buttons.keys()):
-            if device_id not in players:
-                btn, lbl, frame = self.player_buttons[device_id]
-                frame.destroy()
-                del self.player_buttons[device_id]
+            btn, lbl, frame = self.player_buttons[device_id]
+            frame.destroy()
+        self.player_buttons.clear()
         
-        # Add buttons for new players (sorted alphabetically)
+        # Recreate all buttons in alphabetically sorted order
         for device_id in sorted(players.keys()):
-            if device_id not in self.player_buttons:
-                # Create frame for this player
-                player_frame = ttk.Frame(self.player_selector_frame)
-                player_frame.pack(fill="x", padx=5, pady=2)
-                
-                # Create toggle button
-                btn = ttk.Button(
-                    player_frame,
-                    text=device_id,
-                    command=lambda did=device_id: self._select_player(did),
-                    width=15
-                )
-                btn.pack(side="left", padx=(0, 10))
-                
-                # Create label for track title
-                lbl = ttk.Label(player_frame, text="-")
-                lbl.pack(side="left", fill="x", expand=True)
-                
-                self.player_buttons[device_id] = (btn, lbl, player_frame)
+            # Create frame for this player
+            player_frame = ttk.Frame(self.player_selector_frame)
+            player_frame.pack(fill="x", padx=5, pady=2)
+            
+            # Create toggle button
+            btn = ttk.Button(
+                player_frame,
+                text=device_id,
+                command=lambda did=device_id: self._select_player(did),
+                width=15
+            )
+            btn.pack(side="left", padx=(0, 10))
+            
+            # Create label for track title
+            lbl = ttk.Label(player_frame, text="-")
+            lbl.pack(side="left", fill="x", expand=True)
+            
+            self.player_buttons[device_id] = (btn, lbl, player_frame)
         
         # Update button states
         self._update_player_selection()
