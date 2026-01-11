@@ -433,6 +433,7 @@ class OscReceiver:
         if Dispatcher is None or ThreadingOSCUDPServer is None:
             raise RuntimeError("python-osc is not installed. Run: pip install python-osc")
 
+        print("Starting OSC server on {}:{}".format(self.cfg.osc_listen_ip, self.cfg.osc_listen_port))
         disp = Dispatcher()
         disp.map(self.cfg.osc_path, self._handler)
 
