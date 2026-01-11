@@ -1768,8 +1768,8 @@ BPM Not Updating:
                     if bpm_changed and self.osc_sender:
                         track, _, _, _ = self.state.snapshot()
                         self.osc_sender.send_bpm_update(track.bpm)
-                    if player_list_changed:
-                        self._update_player_buttons()
+                    # Always update player buttons to refresh percentage values
+                    self._update_player_buttons()
                     if active_changed:
                         self._update_player_selection()
                     self._refresh_status()
