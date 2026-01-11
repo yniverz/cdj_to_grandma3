@@ -434,8 +434,11 @@ class OscReceiver:
             raise RuntimeError("python-osc is not installed. Run: pip install python-osc")
 
         print("Starting OSC server on {}:{}".format(self.cfg.osc_listen_ip, self.cfg.osc_listen_port))
+        print("Listening for OSC messages on path: {}".format(self.cfg.osc_path))
         disp = Dispatcher()
         disp.map(self.cfg.osc_path, self._handler)
+        # Add catch-all handler to see ALL incoming OSC messages
+        disp.set_default_handler(lambda addr, *args: print(f"OSC received (catch-all): {addr} with args: {args}"))
 
         self.server = ThreadingOSCUDPServer((self.cfg.osc_listen_ip, int(self.cfg.osc_listen_port)), disp)
 
