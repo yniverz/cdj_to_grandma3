@@ -221,6 +221,8 @@ class SharedState:
             old_rekordbox_id = player.rekordbox_id
             old_title = player.title
             player.device_id = str(device_id)
+            was_on_air = bool(player.is_on_air)
+            went_on_air = was_on_air != bool(is_on_air)
             player.is_on_air = bool(is_on_air)
             player.track_time_ms = int(track_time_ms)
             player.track_length_s = float(track_length_s)
@@ -239,7 +241,7 @@ class SharedState:
                         print(f"[DEBUG] Player {device_id} went ON AIR - auto-selecting")
                         self.active_player_id = device_id
                         active_changed = True
-                else:
+                elif went_on_air:
                     # Check if this is more recent than current active player
                     if self.active_player_id:
                         current_on_air_time = self.last_on_air_time.get(self.active_player_id, 0)
