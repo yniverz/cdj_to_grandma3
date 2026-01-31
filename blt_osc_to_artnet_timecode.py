@@ -255,6 +255,19 @@ class SharedState:
                 if device_id in self.last_on_air_time:
                     print(f"[DEBUG] Player {device_id} went OFF AIR")
                     del self.last_on_air_time[device_id]
+                if self.active_player_id == device_id:
+                    # find most recent on-air player
+                    most_recent_id = None
+                    most_recent_time = 0.0
+                    for pid, t in self.last_on_air_time.items():
+                        if t > most_recent_time:
+                            most_recent_time = t
+                            most_recent_id = pid
+
+                    if most_recent_id != self.active_player_id:
+                        print(f"[DEBUG] Active player {device_id} went OFF AIR - switching to {most_recent_id}")
+                        self.active_player_id = most_recent_id
+                        active_changed = True
             
             # If no active player is set, auto-select the first one
             if self.active_player_id is None and device_id:
